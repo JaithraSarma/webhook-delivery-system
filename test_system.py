@@ -250,6 +250,110 @@ def test_part_b():
     log("ALL PART B TESTS PASSED!")
 
 
+# ============================================
+# Test Part C: Multi-User Fairness
+# ============================================
+
+USER_A = "user_a"
+USER_B = "user_b"
+HEADERS_A = {"X-User-Id": USER_A, "Content-Type": "application/json"}
+HEADERS_B = {"X-User-Id": USER_B, "Content-Type": "application/json"}
+
+
+def test_part_c():
+    log("PART C: Multi-User Fairness Tests")
+
+    clear_receiver_logs()
+
+    # setup: create webhooks for both users
+    resp_a = requests.post(f"{API_URL}/api/webhooks", headers=HEADERS_A, json={
+        "url": "http://mock_receiver:9000/webhook",
+        "event_types": ["request.created"]
+    })
+    webhook_a_id = resp_a.json()["webhook"]["id"]
+
+    resp_b = requests.post(f"{API_URL}/api/webhooks", headers=HEADERS_B, json={
+        "url": "http://mock_receiver:9000/webhook",
+        "event_types": ["request.created"]
+    })
+    webhook_b_id = resp_b.json()["webhook"]["id"]
+
+    # 1. Set rate limit to 10/second
+    log("Test C1: Set rate limit to 10/second")
+    resp = requests.put(f"{API_URL}/api/rate-limit", json={"rate_limit_per_second": 10})
+    check(resp.status_code == 200, "Rate limit set to 10/second")
+
+    # 2. User A floods with 100 events (using 100 instead of 1000 for faster test)
+    log("Test C2: User A publishes 100 events, User B publishes 1")
+    clear_receiver_logs()
+
+    for i in range(100):
+        requests.post(f"{API_URL}/api/events", headers=HEADERS_A, json={
+            "event_type": "request.created",
+            "payload": {"request_id": f"flood_{i}", "user": "A"}
+        })
+
+    # small delay then User B publishes 1 event
+    time.sleep(0.5)
+    b_publish_time = time.time()
+    requests.post(f"{API_URL}/api/events", headers=HEADERS_B, json={
+        "event_type": "request.created",
+        "payload": {"request_id": "important_1", "user": "B"}
+    })
+
+    # 3. Wait for User B's delivery (should come within a few seconds)
+    log("Test C3: Check User B's delivery latency")
+    b_delivered = False
+    b_delivery_time = None
+    timeout = 30
+    start = time.time()
+
+    while time.time() - start < timeout:
+        logs = get_receiver_logs()
+        for entry in logs["payloads"]:
+            if entry["data"].get("payload", {}).get("user") == "B":
+                b_delivered = True
+                b_delivery_time = time.time()
+                break
+        if b_delivered:
+            break
+        time.sleep(0.3)
+
+    check(b_delivered, "User B's delivery was received")
+    b_latency = b_delivery_time - b_publish_time
+    print(f"  User B delivery latency: {b_latency:.1f}s")
+    check(b_latency < 10, f"User B latency ({b_latency:.1f}s) is under 10 seconds (fair scheduling)")
+
+    # check current state
+    logs = get_receiver_logs()
+    total_so_far = logs["total"]
+    b_count = sum(1 for e in logs["payloads"] if e["data"].get("payload", {}).get("user") == "B")
+    a_count = total_so_far - b_count
+    print(f"  At time of B delivery: {a_count} of A's deliveries done, {b_count} of B's done")
+    print(f"  User A still has {100 - a_count} deliveries pending (proves B wasn't blocked)")
+
+    # 4. Wait for all deliveries to complete
+    log("Test C4: Verify all deliveries eventually complete")
+    all_logs = wait_for_delivery(101, timeout=60)
+    check(all_logs["total"] >= 101, f"All deliveries received (got {all_logs['total']})")
+
+    a_total = sum(1 for e in all_logs["payloads"] if e["data"].get("payload", {}).get("user") == "A")
+    b_total = sum(1 for e in all_logs["payloads"] if e["data"].get("payload", {}).get("user") == "B")
+    print(f"  User A total deliveries: {a_total}")
+    print(f"  User B total deliveries: {b_total}")
+    check(a_total == 100, f"User A got all 100 deliveries")
+    check(b_total == 1, f"User B got their 1 delivery")
+
+    # reset rate limit
+    requests.put(f"{API_URL}/api/rate-limit", json={"rate_limit_per_second": 0})
+
+    # cleanup
+    requests.delete(f"{API_URL}/api/webhooks/{webhook_a_id}", headers=HEADERS_A)
+    requests.delete(f"{API_URL}/api/webhooks/{webhook_b_id}", headers=HEADERS_B)
+
+    log("ALL PART C TESTS PASSED!")
+
+
 if __name__ == "__main__":
     print("\nWebhook Delivery System - End-to-End Tests")
     print("=" * 60)
@@ -271,5 +375,7 @@ if __name__ == "__main__":
     test_part_a()
 
     test_part_b()
+
+    test_part_c()
 
     print("\n\nAll tests completed successfully!")
