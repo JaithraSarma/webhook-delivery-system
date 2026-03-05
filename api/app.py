@@ -139,6 +139,8 @@ def delete_webhook(webhook_id):
     if not webhook:
         return jsonify({"error": "Webhook not found"}), 404
 
+    # delete associated delivery logs first
+    DeliveryLog.query.filter_by(webhook_id=webhook_id).delete()
     db.session.delete(webhook)
     db.session.commit()
     return jsonify({"message": "Webhook deleted"}), 200
@@ -252,7 +254,11 @@ def health():
 
 # create tables on startup
 with app.app_context():
-    db.create_all()
+    from sqlalchemy import inspect
+    inspector = inspect(db.engine)
+    existing_tables = inspector.get_table_names()
+    if "webhooks" not in existing_tables:
+        db.create_all()
 
 
 if __name__ == "__main__":

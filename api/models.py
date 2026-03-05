@@ -39,7 +39,7 @@ class DeliveryLog(db.Model):
     error_message = db.Column(db.Text, nullable=True)
     delivered_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    webhook = db.relationship("Webhook", backref=db.backref("delivery_logs", lazy=True))
+    webhook = db.relationship("Webhook", backref=db.backref("delivery_logs", lazy=True, cascade="all, delete-orphan"))
 
     def to_dict(self):
         return {
