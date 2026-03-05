@@ -205,7 +205,7 @@ def ingest_event():
     if not matching_webhooks:
         return jsonify({"message": "No matching webhooks found", "deliveries_queued": 0}), 200
 
-    # queue delivery jobs in Redis
+    # queue delivery jobs in per-user Redis queues for fair scheduling
     queued_count = 0
     for webhook in matching_webhooks:
         job = {
@@ -215,7 +215,10 @@ def ingest_event():
             "payload": payload,
             "user_id": user_id,
         }
-        r.lpush("delivery_queue", json.dumps(job))
+        # push to per-user queue
+        r.lpush(f"user_queue:{user_id}", json.dumps(job))
+        # register user in the active users set
+        r.sadd("active_users", user_id)
         queued_count += 1
 
     return jsonify({
