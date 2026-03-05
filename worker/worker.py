@@ -28,8 +28,9 @@ def get_rate_limit():
 
 def wait_for_rate_limit():
     """
-    Token bucket style rate limiter using Redis.
-    Uses a sliding window counter to enforce the global rate limit.
+    Sliding window counter rate limiter using Redis.
+    Uses one key per second to count deliveries.
+    Blocks until a delivery slot is available.
     """
     rate_limit = get_rate_limit()
     if rate_limit <= 0:
@@ -39,24 +40,24 @@ def wait_for_rate_limit():
         current_time = int(time.time())
         key = f"rate_limit_window:{current_time}"
 
-        # get current count for this second
-        current_count = r.get(key)
-        if current_count is None:
-            current_count = 0
-        else:
-            current_count = int(current_count)
+        # atomically increment and check
+        count = r.incr(key)
 
-        if current_count < rate_limit:
-            # increment and set expiry
-            pipe = r.pipeline()
-            pipe.incr(key)
-            pipe.expire(key, 2)  # expire after 2 seconds
-            pipe.execute()
+        # set expiry on first access
+        if count == 1:
+            r.expire(key, 3)
+
+        if count <= rate_limit:
+            # under the limit, proceed
             return
         else:
-            # wait a bit and try again
-            sleep_time = 1.0 / rate_limit if rate_limit > 0 else 0.1
-            time.sleep(sleep_time)
+            # over the limit, undo the increment and wait
+            r.decr(key)
+            # sleep until the next second
+            sleep_until = current_time + 1
+            sleep_duration = sleep_until - time.time()
+            if sleep_duration > 0:
+                time.sleep(sleep_duration)
 
 
 def get_db_connection():

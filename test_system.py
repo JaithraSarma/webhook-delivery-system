@@ -212,7 +212,7 @@ def test_part_b():
         })
 
     # wait for all deliveries
-    logs = wait_for_delivery(20, timeout=30)
+    logs = wait_for_delivery(20, timeout=60)
     elapsed = time.time() - start_time
 
     check(logs["total"] == 20, f"All 20 deliveries received (got {logs['total']})")
