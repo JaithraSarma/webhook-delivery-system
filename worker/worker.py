@@ -125,22 +125,66 @@ def deliver_webhook(job):
         log_delivery(webhook_id, event_type, payload, None, False, str(e))
 
 
+def get_active_users():
+    """Get the set of users who have pending deliveries."""
+    try:
+        users = r.smembers("active_users")
+        return [u.decode("utf-8") if isinstance(u, bytes) else u for u in users]
+    except Exception:
+        return []
+
+
+def pop_job_from_user(user_id):
+    """Pop one job from a specific user's queue."""
+    result = r.rpop(f"user_queue:{user_id}")
+    if result:
+        # check if user queue is now empty, remove from active set
+        if r.llen(f"user_queue:{user_id}") == 0:
+            r.srem("active_users", user_id)
+        return json.loads(result)
+    else:
+        # queue is empty, remove from active set
+        r.srem("active_users", user_id)
+        return None
+
+
 def main():
-    """Main worker loop: pop jobs from Redis queue and deliver."""
-    print("[WORKER] Delivery worker started, waiting for jobs...")
+    """
+    Main worker loop with round-robin fair scheduling.
+    
+    Instead of a single FIFO queue, we use per-user queues and cycle
+    through users in round-robin fashion. This ensures that one user
+    flooding the system with events doesn't starve other users.
+    
+    Algorithm:
+    1. Get all active users (those with pending deliveries)
+    2. For each user, pop one delivery job and process it
+    3. Repeat, cycling through all users equally
+    """
+    print("[WORKER] Delivery worker started with fair scheduling (round-robin)...")
 
     while True:
         try:
-            # blocking pop with 1 second timeout
-            result = r.brpop("delivery_queue", timeout=1)
-            if result:
-                _, job_data = result
-                job = json.loads(job_data)
+            active_users = get_active_users()
 
-                # respect rate limit before delivering
-                wait_for_rate_limit()
+            if not active_users:
+                # no pending jobs, wait briefly
+                time.sleep(0.1)
+                continue
 
-                deliver_webhook(job)
+            # round-robin: process one job per user
+            delivered_any = False
+            for user_id in active_users:
+                job = pop_job_from_user(user_id)
+                if job:
+                    # respect rate limit before delivering
+                    wait_for_rate_limit()
+                    deliver_webhook(job)
+                    delivered_any = True
+
+            if not delivered_any:
+                time.sleep(0.1)
+
         except redis.exceptions.ConnectionError:
             print("[WORKER] Redis connection error, retrying in 2s...")
             time.sleep(2)
