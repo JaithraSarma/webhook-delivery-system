@@ -252,6 +252,40 @@ def health():
     return jsonify({"status": "ok"}), 200
 
 
+# ============================================
+# Rate Limit Configuration (Part B)
+# ============================================
+
+
+@app.route("/api/rate-limit", methods=["GET"])
+def get_rate_limit():
+    """Get the current global delivery rate limit."""
+    limit = r.get("rate_limit")
+    if limit is not None:
+        current_limit = int(limit)
+    else:
+        current_limit = 0  # 0 means unlimited
+    return jsonify({"rate_limit_per_second": current_limit}), 200
+
+
+@app.route("/api/rate-limit", methods=["PUT"])
+def set_rate_limit():
+    """Set the global delivery rate limit (deliveries per second)."""
+    data = request.get_json()
+    if not data or "rate_limit_per_second" not in data:
+        return jsonify({"error": "rate_limit_per_second is required"}), 400
+
+    limit = data["rate_limit_per_second"]
+    if not isinstance(limit, int) or limit < 0:
+        return jsonify({"error": "rate_limit_per_second must be a non-negative integer"}), 400
+
+    r.set("rate_limit", limit)
+    return jsonify({
+        "message": f"Rate limit updated to {limit}/second",
+        "rate_limit_per_second": limit,
+    }), 200
+
+
 # create tables on startup
 with app.app_context():
     from sqlalchemy import inspect
