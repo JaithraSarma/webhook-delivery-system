@@ -176,6 +176,80 @@ def test_part_a():
     log("ALL PART A TESTS PASSED!")
 
 
+# ============================================
+# Test Part B: Rate Limiting
+# ============================================
+
+def test_part_b():
+    log("PART B: Rate Limiting Tests")
+
+    clear_receiver_logs()
+
+    # setup: create a webhook for testing
+    resp = requests.post(f"{API_URL}/api/webhooks", headers=HEADERS, json={
+        "url": "http://mock_receiver:9000/webhook",
+        "event_types": ["request.created", "request.updated", "request.deleted"]
+    })
+    webhook_id = resp.json()["webhook"]["id"]
+
+    # 1. Set rate limit to 5/second
+    log("Test B1: Set rate limit to 5/second")
+    resp = requests.put(f"{API_URL}/api/rate-limit", json={"rate_limit_per_second": 5})
+    check(resp.status_code == 200, "Rate limit set to 5/second")
+
+    resp = requests.get(f"{API_URL}/api/rate-limit")
+    check(resp.json()["rate_limit_per_second"] == 5, "Rate limit confirmed as 5/second")
+
+    # 2. Publish 20 events rapidly
+    log("Test B2: Publish 20 events with rate limit 5/sec (expect ~4 seconds)")
+    clear_receiver_logs()
+    start_time = time.time()
+
+    for i in range(20):
+        requests.post(f"{API_URL}/api/events", headers=HEADERS, json={
+            "event_type": "request.created",
+            "payload": {"request_id": f"rate_test_{i}", "batch": "b1"}
+        })
+
+    # wait for all deliveries
+    logs = wait_for_delivery(20, timeout=30)
+    elapsed = time.time() - start_time
+
+    check(logs["total"] == 20, f"All 20 deliveries received (got {logs['total']})")
+    print(f"  Time elapsed: {elapsed:.1f}s (expected ~4s with 5/sec limit)")
+    check(elapsed >= 2.0, f"Deliveries were rate limited (took {elapsed:.1f}s, not instant)")
+
+    # 3. Update rate limit to 20/second
+    log("Test B3: Update rate limit to 20/second")
+    resp = requests.put(f"{API_URL}/api/rate-limit", json={"rate_limit_per_second": 20})
+    check(resp.status_code == 200, "Rate limit updated to 20/second")
+
+    # 4. Publish 20 more events (should be faster)
+    log("Test B4: Publish 20 more events with rate limit 20/sec (should be faster)")
+    clear_receiver_logs()
+    start_time = time.time()
+
+    for i in range(20):
+        requests.post(f"{API_URL}/api/events", headers=HEADERS, json={
+            "event_type": "request.created",
+            "payload": {"request_id": f"rate_test_fast_{i}", "batch": "b2"}
+        })
+
+    logs = wait_for_delivery(20, timeout=15)
+    elapsed_fast = time.time() - start_time
+
+    check(logs["total"] == 20, f"All 20 deliveries received (got {logs['total']})")
+    print(f"  Time elapsed: {elapsed_fast:.1f}s (should be faster than {elapsed:.1f}s)")
+
+    # 5. Set rate limit back to 0 (unlimited) for other tests
+    requests.put(f"{API_URL}/api/rate-limit", json={"rate_limit_per_second": 0})
+
+    # cleanup
+    requests.delete(f"{API_URL}/api/webhooks/{webhook_id}", headers=HEADERS)
+
+    log("ALL PART B TESTS PASSED!")
+
+
 if __name__ == "__main__":
     print("\nWebhook Delivery System - End-to-End Tests")
     print("=" * 60)
@@ -195,4 +269,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     test_part_a()
+
+    test_part_b()
+
     print("\n\nAll tests completed successfully!")
